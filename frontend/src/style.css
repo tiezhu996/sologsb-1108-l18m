@@ -625,6 +625,16 @@ td em {
   font-size: 12px;
 }
 
+.form-grid label > small {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.field-hint--danger {
+  color: var(--danger) !important;
+  font-weight: 600;
+}
+
 .span-2 {
   grid-column: span 2;
 }

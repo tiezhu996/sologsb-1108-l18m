@@ -30,6 +30,13 @@ function filmName(id: number): string {
   return filmStore.films.find((film) => film.id === id)?.model ?? '未知胶片'
 }
 
+function filmBatchForRun(run: { filmId?: number; recipeId: number }): string {
+  const film = filmStore.films.find((item) => item.id === run.filmId)
+    ?? filmStore.films.find((item) => item.id === recipeStore.recipes.find((recipe) => recipe.id === run.recipeId)?.filmId)
+  if (!film) return '未知胶片批次'
+  return `${film.model} · ${film.format} · ${film.emulsionNo}`
+}
+
 function developerName(id: number): string {
   return developerStore.developers.find((developer) => developer.id === id)?.name ?? '未知显影液'
 }
@@ -158,8 +165,10 @@ onMounted(async () => {
               <strong>{{ run.batchNo }}</strong>
               <span>{{ run.runDate }}</span>
             </div>
+            <p>胶片批次：{{ filmBatchForRun(run) }}</p>
             <p>{{ recipeName(run.recipeId) }}</p>
             <div class="run-brief__meta">
+              <span>{{ run.rollCount ?? 1 }} 卷</span>
               <span>{{ run.actualTempC }}°C</span>
               <span>{{ run.actualMinutes }} 分钟</span>
               <span>{{ run.tankType }}</span>

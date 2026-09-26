@@ -20,6 +20,8 @@ interface FilterValue {
 interface RunForm {
   batchNo: string
   recipeId: number
+  filmId: number
+  rollCount: number
   actualTempC: number
   actualMinutes: number
   tankType: TankType
@@ -52,6 +54,8 @@ const filterValue = ref<FilterValue>({
 const form = reactive<RunForm>({
   batchNo: `R-${today.replace(/-/g, '')}-01`,
   recipeId: 1,
+  filmId: 1,
+  rollCount: 2,
   actualTempC: 20,
   actualMinutes: 8,
   tankType: '双联罐',
@@ -60,6 +64,12 @@ const form = reactive<RunForm>({
 })
 
 const selectedRecipe = computed(() => recipeStore.recipes.find((recipe) => recipe.id === form.recipeId))
+const selectedFilm = computed(() => filmStore.films.find((film) => film.id === form.filmId))
+const filmShortage = computed(() => {
+  const film = selectedFilm.value
+  if (!film) return 0
+  return Math.max(0, form.rollCount - film.rollsLeft)
+})
 const referenceTemp = computed(() => selectedRecipe.value?.tempC ?? 20)
 const { suggest } = useTempCompensate(referenceTemp)
 const suggestion = computed(() => {
@@ -72,6 +82,7 @@ watch(selectedRecipe, (recipe) => {
   if (!recipe) return
   form.actualTempC = recipe.tempC
   form.actualMinutes = recipe.devMinutes
+  form.filmId = recipe.filmId
 }, { immediate: true })
 
 const filteredRuns = computed(() => {
@@ -79,8 +90,7 @@ const filteredRuns = computed(() => {
   const tankTypes = filterValue.value.selections.tankType ?? []
   const results = filterValue.value.selections.result ?? []
   return runStore.runs.filter((run) => {
-    const recipe = recipeStore.recipes.find((item) => item.id === run.recipeId)
-    const film = filmStore.films.find((item) => item.id === recipe?.filmId)
+    const film = filmForRun(run)
     const haystack = `${run.batchNo} ${run.result} ${film?.model ?? ''}`.toLowerCase()
     const matchesKeyword = !keyword || haystack.includes(keyword)
     const matchesTank = tankTypes.length === 0 || tankTypes.includes(run.tankType)
@@ -88,6 +98,17 @@ const filteredRuns = computed(() => {
     return matchesKeyword && matchesTank && matchesResult
   })
 })
+
+function filmForRun(run: { filmId?: number; recipeId: number }) {
+  return filmStore.films.find((item) => item.id === run.filmId)
+    ?? filmStore.films.find((item) => item.id === recipeStore.recipes.find((recipe) => recipe.id === run.recipeId)?.filmId)
+}
+
+function filmBatchLabel(run: { filmId?: number; recipeId: number }): string {
+  const film = filmForRun(run)
+  if (!film) return '未知胶片批次'
+  return `${film.model} · ${film.format} · ${film.emulsionNo}`
+}
 
 function recipeLabel(id: number): string {
   const recipe = recipeStore.recipes.find((item) => item.id === id)
@@ -111,30 +132,43 @@ async function submitRun(): Promise<void> {
     ElMessage.warning('请填写批次号、配方与结果评价')
     return
   }
+  if (!form.filmId) {
+    ElMessage.warning('请选择本次使用的胶片批次')
+    return
+  }
+  if (!Number.isFinite(form.rollCount) || form.rollCount < 1 || !Number.isInteger(form.rollCount)) {
+    ElMessage.warning('本次卷数需为不小于 1 的整数')
+    return
+  }
+  if (filmShortage.value > 0) {
+    const film = selectedFilm.value
+    ElMessage.error(`${film?.model ?? '胶片'} · ${film?.emulsionNo ?? ''} 余量不足：本次需 ${form.rollCount} 卷，库存仅剩 ${film?.rollsLeft ?? 0} 卷，还差 ${filmShortage.value} 卷，请先补充胶片或减少卷数`)
+    return
+  }
   saving.value = true
-  const selectedDeveloper = developerStore.developers.find((item) => item.id === selectedRecipe.value?.developerId)
-  const willExceedLimit = selectedDeveloper !== undefined
-    && selectedDeveloper.state !== '报废'
-    && selectedDeveloper.usedRolls + 1 > selectedDeveloper.maxRolls
   try {
-    await runStore.addRun({
+    const result = await runStore.addRun({
       batchNo: form.batchNo.trim(),
       recipeId: Number(form.recipeId),
+      filmId: Number(form.filmId),
+      rollCount: form.rollCount,
       actualTempC: Number(form.actualTempC),
       actualMinutes: Number(form.actualMinutes),
       tankType: form.tankType,
       runDate: form.runDate,
       result: form.result.trim()
     })
-    await Promise.all([developerStore.load(), recipeStore.load()])
-    if (willExceedLimit) {
-      ElMessage.warning('冲洗记录已保存，本次已超过显影液标称可冲上限，请评估后标记报废')
+    await Promise.all([filmStore.load(), developerStore.load(), recipeStore.load()])
+    if (result.developerExceeded) {
+      ElMessage.warning(`冲洗记录已保存，但${result.developerName ? `「${result.developerName}」` : '该工作液'}已超过标称可冲上限，请评估后标记报废`)
     } else {
-      ElMessage.success('冲洗记录已保存，显影液用量同步更新')
+      ElMessage.success(`冲洗记录已保存，显影液按 ${form.rollCount} 卷累计，胶片余量同步扣减`)
     }
     form.batchNo = `R-${today.replace(/-/g, '')}-${String(runStore.runs.length + 1).padStart(2, '0')}`
     form.result = ''
     showForm.value = false
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '保存失败，请重试')
   } finally {
     saving.value = false
   }
@@ -190,6 +224,24 @@ onMounted(async () => {
           </select>
         </label>
         <label>
+          <span>本次卷数</span>
+          <input v-model.number="form.rollCount" data-testid="field-rollCount" type="number" min="1" max="12" step="1" />
+          <small v-if="selectedFilm" :class="{ 'field-hint--danger': filmShortage > 0 }">
+            {{ selectedFilm.model }} · {{ selectedFilm.emulsionNo }} 库存 {{ selectedFilm.rollsLeft }} 卷<span v-if="filmShortage > 0">，还差 {{ filmShortage }} 卷</span>
+          </small>
+        </label>
+        <label class="span-2">
+          <span>所用胶片批次</span>
+          <select v-model.number="form.filmId" data-testid="field-filmId">
+            <option v-for="film in filmStore.films" :key="film.id" :value="film.id" :disabled="film.rollsLeft <= 0">
+              {{ film.model }} · {{ film.format }} · {{ film.emulsionNo }}（余 {{ film.rollsLeft }} 卷）
+            </option>
+          </select>
+          <small v-if="filmShortage > 0" class="field-hint--danger">
+            胶片不够，本次登记将被挡下，请先补充该批次或改用其他批次
+          </small>
+        </label>
+        <label>
           <span>实测温度</span>
           <input v-model.number="form.actualTempC" data-testid="field-actualTempC" type="number" min="10" max="50" step="0.1" />
         </label>
@@ -215,7 +267,7 @@ onMounted(async () => {
         <div class="span-3 compensation-callout">
           <div>
             <strong>温度补偿建议</strong>
-            <p v-if="suggestion">{{ suggestion.advice }}；显影液用量会在保存后加一卷。</p>
+            <p v-if="suggestion">{{ suggestion.advice }}；保存后显影液按本次 {{ form.rollCount }} 卷累计用量，胶片余量同步扣减。</p>
             <p v-else>请选择一条配方后查看修正建议。</p>
           </div>
           <button type="button" class="ghost-button" :disabled="!suggestion" @click="applySuggestion">采用修正时间</button>
@@ -253,11 +305,13 @@ onMounted(async () => {
           <div class="entity-card__title">
             <div>
               <h2>{{ run.batchNo }}</h2>
+              <p>胶片批次：{{ filmBatchLabel(run) }}</p>
               <p>{{ recipeLabel(run.recipeId) }}</p>
             </div>
             <PushPullTag v-if="recipeForRun(run.recipeId)" :value="recipeForRun(run.recipeId)?.pushPull ?? 'N'" />
           </div>
           <div class="run-parameters">
+            <span><small>本次卷数</small><strong>{{ run.rollCount ?? 1 }} 卷</strong></span>
             <span><small>实测温度</small><strong>{{ run.actualTempC }}°C</strong></span>
             <span><small>实际时间</small><strong>{{ run.actualMinutes }} 分钟</strong></span>
             <span><small>罐型</small><strong>{{ run.tankType }}</strong></span>
