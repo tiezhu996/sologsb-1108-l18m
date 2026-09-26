@@ -40,6 +40,11 @@ function recipeName(id: number): string {
   return `${filmName(recipe.filmId)} · ${developerName(recipe.developerId)}`
 }
 
+function filmBatchLabel(id: number): string {
+  const film = filmStore.films.find((item) => item.id === id)
+  return film ? `${film.model} · ${film.emulsionNo}` : '未知胶片'
+}
+
 onMounted(async () => {
   await Promise.all([
     filmStore.load(),
@@ -163,7 +168,9 @@ onMounted(async () => {
               <span>{{ run.actualTempC }}°C</span>
               <span>{{ run.actualMinutes }} 分钟</span>
               <span>{{ run.tankType }}</span>
+              <span>{{ run.rollCount }} 卷</span>
             </div>
+            <small>胶片批次：{{ filmBatchLabel(run.filmId) }}</small>
             <small>{{ run.result }}</small>
           </article>
         </div>

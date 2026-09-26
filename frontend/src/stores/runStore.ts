@@ -24,15 +24,28 @@ export const useRunStore = defineStore('run', {
       }
     },
     async addRun(payload: NewRun): Promise<number> {
-      const next = { ...payload, schemaRev: 2 }
+      const rollCount = Math.floor(payload.rollCount)
+      if (!Number.isFinite(rollCount) || rollCount < 1) {
+        throw new Error('本次卷数至少为 1 卷，本次登记未保存')
+      }
+      const film = await db.films.get(payload.filmId)
+      if (!film || film.id === undefined) {
+        throw new Error('未找到所选胶片批次，本次登记未保存')
+      }
+      if (film.rollsLeft < rollCount) {
+        const shortage = rollCount - film.rollsLeft
+        throw new Error(`胶片余量不足：${film.model} · ${film.emulsionNo} 仅剩 ${film.rollsLeft} 卷，本次需 ${rollCount} 卷，还差 ${shortage} 卷，本次登记未保存`)
+      }
+      const next = { ...payload, rollCount, schemaRev: 3 }
       const id = await db.runs.add(plain(next))
       const recipe = await db.recipes.get(payload.recipeId)
       if (recipe) {
         const developer = await db.developers.get(recipe.developerId)
         if (developer && developer.id !== undefined && developer.state !== '报废') {
-          await db.developers.update(developer.id, plain({ usedRolls: developer.usedRolls + 1 }))
+          await db.developers.update(developer.id, plain({ usedRolls: developer.usedRolls + rollCount }))
         }
       }
+      await db.films.update(film.id, plain({ rollsLeft: film.rollsLeft - rollCount }))
       await this.load()
       return id
     },
